@@ -1,0 +1,103 @@
+{
+  "name": "vscode-alijunior-project-switcher",
+  "displayName": "Switch Projects",
+  "description": "Switch between open VSCode windows in alphabetical order with consistent colors per project",
+  "version": "1.0.0",
+  "publisher": "alijunior",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alijuniorbr/vscode-alijunior-project-switcher"
+  },
+  "bugs": {
+    "url": "https://github.com/alijuniorbr/vscode-alijunior-project-switcher/issues"
+  },
+  "homepage": "https://github.com/alijuniorbr/vscode-alijunior-project-switcher#readme",
+  "icon": "icon.png",
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "window",
+    "switch",
+    "project",
+    "workspace",
+    "switcher"
+  ],
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "projectSwitcher.switch",
+        "title": "Switch Projects: Open Window Picker"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "projectSwitcher.switch",
+        "mac": "ctrl+cmd+p",
+        "key": "ctrl+alt+p"
+      }
+    ],
+    "configuration": {
+      "title": "Switch Projects",
+      "properties": {
+        "switchProjects.palette": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "🔴",
+            "🟠",
+            "🟡",
+            "🟢",
+            "🔵",
+            "🟣",
+            "🟤",
+            "⚫",
+            "⚪",
+            "🟥",
+            "🟧",
+            "🟨",
+            "🟩",
+            "🟦",
+            "🟪",
+            "🟫",
+            "⬛",
+            "⬜"
+          ],
+          "description": "List of icons used to color projects (assigned by alphabetical position)."
+        },
+        "switchProjects.currentIcon": {
+          "type": "string",
+          "default": "➜",
+          "description": "Icon shown for the currently active project."
+        },
+        "switchProjects.pinCurrentFirst": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, the current project is always shown first. When false, it stays in alphabetical order."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -watch -p tsconfig.json",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.75.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.0.0"
+  }
+}
