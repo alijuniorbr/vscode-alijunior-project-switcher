@@ -1,0 +1,15 @@
+.gitignore
+.vscode/**
+.vscode-test/**
+
+src/**
+tsconfig.json
+pnpm-lock.yaml
+package-lock.json
+node_modules/**
+
+out/**/*.map
+
+build.md
+**/*.vsix
+icon-full.png
