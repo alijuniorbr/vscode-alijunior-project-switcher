@@ -15,8 +15,8 @@ interface WorkspaceEntry {
 
 type Registry = Record<string, WorkspaceEntry>
 
-// Override por projeto, tudo opcional: o que não estiver definido cai no
-// comportamento derivado (nome da pasta, cor global, ícone padrão).
+// Per-project override, every field optional: whatever is missing falls back to
+// the derived value (folder name, global color, default icon).
 interface ProjectOverride {
   name?:   string
   color?:  string
@@ -29,9 +29,11 @@ type ProjectSettings = Record<string, ProjectOverride>
 
 type ClickAction = 'picker' | 'last'
 
-// Entrada do registro já resolvida contra o override, pronta para exibição.
-// `label` é o que aparece; `sort` é o que ordena — sem o sufixo da pasta real,
-// senão o apelido perderia o efeito na ordenação.
+type ConfigField = 'name' | 'color' | 'icon' | 'order'
+
+// A registry entry already resolved against its override, ready to render.
+// `label` is what shows up; `sort` is what orders — without the folder suffix,
+// otherwise the display name would lose its effect on ordering.
 interface ProjectView {
   path:   string
   label:  string
@@ -65,6 +67,12 @@ function saveProjectSettings(settings: ProjectSettings): Thenable<void> {
   return vscode.workspace
     .getConfiguration('switchProjects')
     .update('projectSettings', settings, vscode.ConfigurationTarget.Global)
+}
+
+function saveClickAction(action: ClickAction): Thenable<void> {
+  return vscode.workspace
+    .getConfiguration('switchProjects')
+    .update('clickAction', action, vscode.ConfigurationTarget.Global)
 }
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
@@ -116,8 +124,8 @@ const DEFAULT_PALETTE = [
 
 // ─── Views ────────────────────────────────────────────────────────────────────
 
-// Com apelido definido o nome da pasta vira sufixo, para o projeto continuar
-// reconhecível pelo diretório real.
+// With a display name set, the folder name becomes a suffix so the project
+// stays recognizable by its real directory.
 function describe(entry: WorkspaceEntry, settings: ProjectSettings): ProjectView {
   const override = settings[entry.path]
   const alias    = override?.name?.trim()
@@ -142,14 +150,14 @@ function describeAll(currentPath: string, settings: ProjectSettings): ProjectVie
 
 // ─── Ordering ─────────────────────────────────────────────────────────────────
 
-// Ordem alfabética é a exibida por padrão: posição estável é o que permite
-// decorar o lugar de cada projeto.
+// Alphabetical is the only order ever displayed: a stable position is what lets
+// you memorize where each project sits.
 function compareByName(a: ProjectView, b: ProjectView): number {
   return a.sort.localeCompare(b.sort, undefined, { sensitivity: 'base' })
 }
 
-// Entre os pinados manda a ordem declarada; quem não declarou cai atrás, em
-// ordem alfabética.
+// Among pinned projects the declared order wins; whoever declared none falls
+// behind, alphabetically.
 function comparePinned(a: ProjectView, b: ProjectView): number {
   if (a.order !== undefined && b.order !== undefined) {
     return a.order - b.order
@@ -166,9 +174,9 @@ function comparePinned(a: ProjectView, b: ProjectView): number {
   return compareByName(a, b)
 }
 
-// `ts` é reescrito toda vez que a janela ganha foco, então a ordem decrescente
-// é a ordem de uso real. O MRU só escolhe QUAIS projetos entram na lista; quem
-// define a posição de cada um é o `compareByName`.
+// `ts` is rewritten every time a window gains focus, so descending order is
+// real usage order. Recency only picks WHICH projects make the list; what
+// decides each one's position is `compareByName`.
 function recentViews(views: ProjectView[], limit: number): ProjectView[] {
   return views
     .filter(view => !view.pinned)
@@ -183,8 +191,8 @@ function pinnedViews(views: ProjectView[]): ProjectView[] {
     .sort(comparePinned)
 }
 
-// O último ativo ignora o pin: ele aparece na própria seção mesmo já estando
-// listado acima.
+// The last active project ignores pinning: it shows up in the footer even when
+// already listed above.
 function lastView(views: ProjectView[]): ProjectView | undefined {
   const [last] = [...views].sort((a, b) => b.ts - a.ts)
   return last
@@ -214,20 +222,27 @@ function focusWindow(workspacePath: string): void {
 
 // ─── Status bar ──────────────────────────────────────────────────────────────
 
-// Prioridade alta o bastante para o item ficar à esquerda do indicador de
-// branch do git, que é o vizinho mais disputado desse canto da barra.
+// High enough for the item to sit left of the git branch indicator, the most
+// contested neighbour in that corner of the bar.
 const STATUS_PRIORITY = 100000
 
 const TRUSTED_COMMANDS = {
   enabledCommands: [
     'projectSwitcher.goto',
     'projectSwitcher.switch',
+    'projectSwitcher.pin',
+    'projectSwitcher.unpin',
     'projectSwitcher.configureProject',
+    'projectSwitcher.quickConfig',
   ],
 }
 
-// Hex entra como cor literal; qualquer outro texto é tratado como id de cor do
-// tema, o que deixa o item acompanhar a paleta em vez de fixar um tom.
+const GEAR_LINK = '[$(gear)](command:projectSwitcher.quickConfig)  '
+
+const PICKER_LINK = '[$(list-flat)  Open picker](command:projectSwitcher.switch)'
+
+// A hex value is used literally; anything else is treated as a theme color id,
+// which lets the item follow the palette instead of pinning one tone.
 function resolveColor(value: string): string | vscode.ThemeColor | undefined {
   const trimmed = value.trim()
 
@@ -242,6 +257,21 @@ function resolveColor(value: string): string | vscode.ThemeColor | undefined {
   return new vscode.ThemeColor(trimmed)
 }
 
+function projectLink(view: ProjectView): string {
+  const args = encodeURIComponent(JSON.stringify([view.path]))
+  return `[$(${view.icon})  ${view.label}](command:projectSwitcher.goto?${args})`
+}
+
+// The action icon opens each line so the click targets stack in the same
+// column — without CSS there is no right alignment available in a tooltip.
+function appendItem(md: vscode.MarkdownString, view: ProjectView): void {
+  const args   = encodeURIComponent(JSON.stringify([view.path]))
+  const toggle = view.pinned ? 'projectSwitcher.unpin' : 'projectSwitcher.pin'
+  const badge  = view.pinned ? 'pinned' : 'pin'
+
+  md.appendMarkdown(`[$(${badge})](command:${toggle}?${args})  ${projectLink(view)}\n\n`)
+}
+
 function appendSection(md: vscode.MarkdownString, title: string, views: ProjectView[]): void {
   if (views.length === 0) {
     return
@@ -250,15 +280,33 @@ function appendSection(md: vscode.MarkdownString, title: string, views: ProjectV
   md.appendMarkdown(`**${title}**\n\n`)
 
   for (const view of views) {
-    const args = encodeURIComponent(JSON.stringify([view.path]))
-    md.appendMarkdown(`[$(${view.icon})  ${view.label}](command:projectSwitcher.goto?${args})\n\n`)
+    appendItem(md, view)
   }
 
   md.appendMarkdown('---\n\n')
 }
 
-// O rodapé é sempre o complemento do clique: se o clique abre o picker, aqui
-// fica o último ativo; se o clique vai para o último, aqui fica o picker.
+// Last line of the tooltip, the closest one to the mouse: it always carries
+// whatever the click doesn't do. The gear takes the left column, where the pin
+// sits on the lines above.
+function appendFooter(
+  md:          vscode.MarkdownString,
+  views:       ProjectView[],
+  clickAction: ClickAction,
+): void {
+  const last = clickAction === 'picker' ? lastView(views) : undefined
+
+  if (!last) {
+    md.appendMarkdown(`${GEAR_LINK}${PICKER_LINK}`)
+    return
+  }
+
+  md.appendMarkdown('**Last active**\n\n')
+  md.appendMarkdown(`${GEAR_LINK}${projectLink(last)}`)
+}
+
+// The picker shows up once: at the top when the click already opens it, in the
+// footer when the click goes to the last project.
 function buildTooltip(
   currentLabel: string,
   views:        ProjectView[],
@@ -269,31 +317,28 @@ function buildTooltip(
   md.isTrusted = TRUSTED_COMMANDS
 
   md.appendMarkdown(`**${currentLabel}**  [$(gear)](command:projectSwitcher.configureProject)\n\n`)
+
+  if (clickAction === 'picker') {
+    md.appendMarkdown(`${PICKER_LINK}\n\n`)
+  }
+
   md.appendMarkdown('---\n\n')
 
   if (views.length === 0) {
-    md.appendMarkdown('_Nenhuma outra janela aberta_')
-    return md
+    md.appendMarkdown('_No other window open_\n\n')
+    md.appendMarkdown('---\n\n')
+  } else {
+    appendSection(md, `Last ${recentCount} opened`, recentViews(views, recentCount))
+    appendSection(md, 'Pinned', pinnedViews(views))
   }
 
-  appendSection(md, `Last ${recentCount} opened`, recentViews(views, recentCount))
-  appendSection(md, 'Pinned', pinnedViews(views))
-
-  if (clickAction === 'picker') {
-    const last = lastView(views)
-
-    if (last) {
-      appendSection(md, 'Last Active', [last])
-    }
-  }
-
-  md.appendMarkdown('[$(list-flat)  Todos os projetos…](command:projectSwitcher.switch)')
+  appendFooter(md, views, clickAction)
 
   return md
 }
 
-// Com `recentCount` em zero o item vira só o rótulo do projeto atual: sem
-// tooltip e com o clique caindo no picker.
+// With `recentCount` at zero the item becomes just the current project label:
+// no tooltip, and the click falling back to the picker.
 function refreshStatusBar(item: vscode.StatusBarItem): void {
   const { recentCount, statusBarColor, clickAction, projectSettings } = getConfig()
 
@@ -323,6 +368,19 @@ function refreshStatusBar(item: vscode.StatusBarItem): void {
   item.show()
 }
 
+// ─── Pin ──────────────────────────────────────────────────────────────────────
+
+// Unpinning keeps the record with `pinned: false`: name, color, icon and order
+// stay in place and apply again if the project is pinned later.
+function setPinned(wsPath: string, pinned: boolean): Thenable<void> {
+  const settings = getConfig().projectSettings
+  const next     = { ...settings }
+
+  next[wsPath] = { ...settings[wsPath], pinned }
+
+  return saveProjectSettings(next)
+}
+
 // ─── Project configuration ───────────────────────────────────────────────────
 
 async function pickIcon(current: string): Promise<string | undefined> {
@@ -339,85 +397,150 @@ async function pickIcon(current: string): Promise<string | undefined> {
   return pick?.description
 }
 
-// Cada passo cancelado aborta a configuração inteira — nada é gravado pela
-// metade.
+async function pickField(current: ProjectOverride | undefined): Promise<ConfigField | undefined> {
+  const items = [
+    { label: 'Name',  description: current?.name ?? '', field: 'name' as ConfigField },
+    { label: 'Color', description: current?.color ?? '', field: 'color' as ConfigField },
+    { label: 'Icon',  description: current?.icon ?? DEFAULT_ICON, field: 'icon' as ConfigField },
+    {
+      label:       'Order',
+      description: current?.order === undefined ? '' : String(current.order),
+      field:       'order' as ConfigField,
+    },
+  ]
+
+  const pick = await vscode.window.showQuickPick(items, {
+    placeHolder: 'What to configure for this project?',
+  })
+
+  return pick?.field
+}
+
+// Each field is edited on its own: nothing but the chosen one is touched, and
+// cancelling at any point writes nothing.
 async function configureProject(): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0]
 
   if (!folder) {
-    vscode.window.showInformationMessage('Nenhum projeto aberto nesta janela.')
+    vscode.window.showInformationMessage('No project open in this window.')
     return
   }
 
   const settings = getConfig().projectSettings
   const current  = settings[folder.uri.fsPath]
+  const field    = await pickField(current)
 
-  const name = await vscode.window.showInputBox({
-    value:  current?.name ?? folder.name,
-    prompt: 'Nome exibido (vazio usa o nome da pasta)',
-  })
-
-  if (name === undefined) {
+  if (field === undefined) {
     return
   }
 
-  const color = await vscode.window.showInputBox({
-    value:  current?.color ?? '',
-    prompt: 'Cor: hex (#FFD700) ou id de cor do tema (vazio usa a cor global)',
-  })
+  const override: ProjectOverride = { ...current }
 
-  if (color === undefined) {
-    return
-  }
+  switch (field) {
+    case 'name': {
+      const name = await vscode.window.showInputBox({
+        value:  current?.name ?? folder.name,
+        prompt: 'Display name (empty uses the folder name)',
+      })
 
-  const icon = await pickIcon(current?.icon ?? DEFAULT_ICON)
+      if (name === undefined) {
+        return
+      }
 
-  if (icon === undefined) {
-    return
-  }
+      if (name.trim().length > 0) {
+        override.name = name.trim()
+      } else {
+        delete override.name
+      }
 
-  const orderText = await vscode.window.showInputBox({
-    value:  current?.order === undefined ? '' : String(current.order),
-    prompt: 'Ordem entre os fixados (vazio deixa em ordem alfabética)',
-  })
+      break
+    }
 
-  if (orderText === undefined) {
-    return
-  }
+    case 'color': {
+      const color = await vscode.window.showInputBox({
+        value:  current?.color ?? '',
+        prompt: 'Color: hex (#FFD700) or theme color id (empty uses the global color)',
+      })
 
-  const pinnedPick = await vscode.window.showQuickPick(['Não', 'Sim'], {
-    placeHolder: 'Fixar este projeto na seção Pinned?',
-  })
+      if (color === undefined) {
+        return
+      }
 
-  if (pinnedPick === undefined) {
-    return
-  }
+      if (color.trim().length > 0) {
+        override.color = color.trim()
+      } else {
+        delete override.color
+      }
 
-  const order    = Number.parseInt(orderText.trim(), 10)
-  const override: ProjectOverride = {}
+      break
+    }
 
-  if (name.trim().length > 0) {
-    override.name = name.trim()
-  }
+    case 'icon': {
+      const icon = await pickIcon(current?.icon ?? DEFAULT_ICON)
 
-  if (color.trim().length > 0) {
-    override.color = color.trim()
-  }
+      if (icon === undefined) {
+        return
+      }
 
-  override.icon = icon
+      override.icon = icon
 
-  if (!Number.isNaN(order)) {
-    override.order = order
-  }
+      break
+    }
 
-  if (pinnedPick === 'Sim') {
-    override.pinned = true
+    case 'order': {
+      const orderText = await vscode.window.showInputBox({
+        value:  current?.order === undefined ? '' : String(current.order),
+        prompt: 'Order among pinned projects (empty keeps it alphabetical)',
+      })
+
+      if (orderText === undefined) {
+        return
+      }
+
+      const order = Number.parseInt(orderText.trim(), 10)
+
+      if (Number.isNaN(order)) {
+        delete override.order
+      } else {
+        override.order = order
+      }
+
+      break
+    }
   }
 
   const next = { ...settings }
   next[folder.uri.fsPath] = override
 
   await saveProjectSettings(next)
+}
+
+// Direct choice of the click action, with the current one marked.
+async function quickConfig(): Promise<void> {
+  const { clickAction } = getConfig()
+
+  const items = [
+    {
+      label:       '$(arrow-right)  Last',
+      description: clickAction === 'last' ? '✓ current' : 'go straight to the last project',
+      action:      'last' as ClickAction,
+    },
+    {
+      label:       '$(list-flat)  Picker',
+      description: clickAction === 'picker' ? '✓ current' : 'open the project list',
+      action:      'picker' as ClickAction,
+    },
+  ]
+
+  const pick = await vscode.window.showQuickPick(items, {
+    placeHolder: 'Status bar click action',
+  })
+
+  if (!pick || pick.action === clickAction) {
+    return
+  }
+
+  await saveClickAction(pick.action)
 }
 
 // ─── Activation ───────────────────────────────────────────────────────────────
@@ -443,9 +566,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   refreshStatusBar(statusItem)
 
-  // Ganhar foco carimba o `ts` da própria janela e reordena o MRU — as outras
-  // janelas ficam congeladas no momento em que o foco saiu delas. Sem lista de
-  // recentes ninguém consome a ordem, então o carimbo é dispensado.
+  // Gaining focus stamps this window's own `ts` and reorders recency — the
+  // other windows stay frozen at the moment focus left them. With no recent
+  // list nobody consumes that order, so the stamp is skipped.
   context.subscriptions.push(
     vscode.window.onDidChangeWindowState(state => {
       if (!state.focused) {
@@ -477,10 +600,27 @@ export function activate(context: vscode.ExtensionContext): void {
   )
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('projectSwitcher.pin', (wsPath: string): Thenable<void> => {
+      return setPinned(wsPath, true)
+    })
+  )
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('projectSwitcher.unpin', (wsPath: string): Thenable<void> => {
+      return setPinned(wsPath, false)
+    })
+  )
+
+  context.subscriptions.push(
     vscode.commands.registerCommand('projectSwitcher.configureProject', configureProject)
   )
 
-  // Sem outra janela registrada não há destino, então o clique cai no picker.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('projectSwitcher.quickConfig', quickConfig)
+  )
+
+  // With no other window registered there is no destination, so the click falls
+  // back to the picker.
   context.subscriptions.push(
     vscode.commands.registerCommand('projectSwitcher.gotoLast', async (): Promise<void> => {
       const currentPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
@@ -505,7 +645,7 @@ export function activate(context: vscode.ExtensionContext): void {
         .sort(compareByName)
 
       if (!entries.length) {
-        vscode.window.showInformationMessage('Nenhum projeto registrado ainda.')
+        vscode.window.showInformationMessage('No projects registered yet.')
         return
       }
 

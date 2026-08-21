@@ -6,20 +6,23 @@ Switch between open VSCode windows from the status bar, with per-project names, 
 
 - Status bar item showing the current project
 - Hover lists your pinned projects and the most recently used ones, as direct links
-- One click either opens the full picker or jumps to the last used project — your choice
-- Per-project display name, color, icon and pin, set through a guided command
-- Full picker lists all open windows sorted alphabetically
+- Pin and unpin straight from the hover, one click per project
+- One click on the item either opens the full picker or jumps to the last used project — switchable from the hover itself
+- Per-project display name, color, icon and order
+- Full picker lists all open windows sorted alphabetically, each with a stable palette icon
 - No extra permissions required
 
 ## Usage
 
-Hover the project name in the status bar to pick from your pinned and recent projects. Click it to open the picker (or to jump to the last project, if you set `clickAction` to `last`).
+Hover the project name in the status bar to pick from your pinned and recent projects. Click it to open the picker — or to jump to the last project, if you switch `clickAction` to `last`.
 
-Press `⌃⌘O` (macOS) or `Ctrl+Alt+O` (Windows/Linux) to jump to the last used project without leaving the keyboard.
+Everything is also reachable from the keyboard and the Command Palette:
 
-Press `⌃⌘P` (macOS) or `Ctrl+Alt+P` (Windows/Linux) to open the full window picker.
-
-Run `Switch Projects: Configure Current Project` from the Command Palette — or click the gear at the top of the hover — to set this project's name, color, icon, order and pin.
+| Command | Shortcut | What it does |
+| --- | --- | --- |
+| `Switch Projects: Open Window Picker` | `⌃⌘P` / `Ctrl+Alt+P` | Lists every open window, filterable |
+| `Switch Projects: Go to Last Project` | `⌃⌘O` / `Ctrl+Alt+O` | Jumps straight to the window you came from |
+| `Switch Projects: Configure Current Project` | — | Sets this project's name, color, icon or order |
 
 ## Recommended: make the hover snappier
 
@@ -33,15 +36,31 @@ Add it to your `settings.json`. This setting is workbench-wide, so it also speed
 
 ## The hover
 
-The hover is built in sections, top to bottom:
+Top to bottom:
+
+**Header** — the current project, plus a gear that configures it. `Open picker` sits right below when clicking the status bar item already opens the picker. It stays visible on purpose: the status bar item is the extension's only entry point, and hiding the picker would leave a first-time user with no way to find it.
 
 **Last N opened** — the projects you used most recently, where N is `recentCount`. Pinned projects are left out, so they never take these slots. Which projects make the list is decided by recency; the order they appear in is alphabetical, so each one keeps a stable position instead of moving around as you work.
 
 **Pinned** — the projects you marked as pinned, in the order you declared. Pinned projects without an order fall behind, alphabetically.
 
-**Last Active** — the project you came from. Shown only when `clickAction` is `picker`, since otherwise the click already does this. It appears even if the same project is already listed above.
+**Footer** — a single line, the closest one to the mouse, holding whatever the click doesn't do: the last active project when `clickAction` is `picker`, `Open picker` when it's `last`. A gear opens on its left, switching the click between **Last** and **Picker**.
 
-The footer is always the complement of the click: with `clickAction` set to `last`, the hover ends with the picker instead of the last active project.
+Every project line above the footer starts with a pin icon: `$(pin)` adds the project to the Pinned section, `$(pinned)` removes it. Unpinning keeps the rest of that project's settings — name, color, icon and order all stay, and come back if you pin it again.
+
+Icons lead each line so the click targets stack in the same column. Two consequences worth knowing: the footer line has no pin, because that column belongs to the gear; and the tooltip closes on any click, so after pinning you'll need to hover again to see the result.
+
+When no other window is registered there is no last active project, so the footer falls back to `Open picker`.
+
+## Configuring a project
+
+Click the gear next to the project name at the top of the hover, or run `Switch Projects: Configure Current Project` from the Command Palette.
+
+It asks which field to change — name, color, icon or order — and edits only that one. The icon step opens a filterable list of codicons; the color accepts a hex value or a theme color id.
+
+## Upgrading
+
+`clickAction` defaults to `picker`, so clicking the status bar item keeps doing what it always did. Nothing to configure after an update — the hover simply has more in it.
 
 ## Configuration
 
@@ -49,7 +68,7 @@ All settings are available under `switchProjects.*` in your `settings.json`.
 
 ### `switchProjects.clickAction`
 
-What clicking the status bar item does — `"picker"` opens the full window picker, `"last"` jumps straight to the last used project.
+What clicking the status bar item does — `"picker"` opens the full window picker, `"last"` jumps straight to the last used project. Switchable from the gear in the hover footer.
 
 **Default:** `"picker"`
 
@@ -61,7 +80,7 @@ What clicking the status bar item does — `"picker"` opens the full window pick
 
 Per-project overrides, keyed by absolute project path. Every field is optional, and anything left out falls back to the derived value: the folder name, the global color, the default icon.
 
-Easier to set through `Switch Projects: Configure Current Project` than by hand, but the shape is plain JSON:
+Easier to set through the gear in the hover than by hand, but the shape is plain JSON:
 
 ```json
 "switchProjects.projectSettings": {
@@ -103,7 +122,7 @@ Default color of the status bar item, used when the current project has no color
 
 ### `switchProjects.palette`
 
-List of icons assigned to projects in the picker, by alphabetical position. The first project gets the first icon, the second gets the second, and so on. Wraps around if there are more projects than icons.
+Icons used to mark projects in the picker. Each project's icon is picked by hashing its absolute path, so it never changes — not when other windows open or close, and not when you rename the project. Two projects can land on the same icon; the palette is a set of marks, not a set of identities.
 
 **Default:**
 ```json
@@ -115,7 +134,7 @@ List of icons assigned to projects in the picker, by alphabetical position. The 
 
 ### `switchProjects.currentIcon`
 
-Icon shown for the currently active project in the picker, instead of its palette color.
+Icon shown for the currently active project in the picker, instead of its palette icon.
 
 **Default:** `"➜"`
 
@@ -146,7 +165,7 @@ While the hover is enabled, a window also refreshes its own timestamp every time
 
 ## Credits
 
-Modified based on [antfu/vscode-where-am-i](https://github.com/antfu/vscode-where-am-i) — the per-project name, color and icon overrides follow the approach used there.
+Modified based on [antfu/vscode-where-am-i](https://github.com/antfu/vscode-where-am-i) — the per-project overrides and the hashed color idea follow the approach used there.
 
 ## License
 
