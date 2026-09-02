@@ -2,7 +2,7 @@
   "name": "vscode-alijunior-project-switcher",
   "displayName": "Switch Projects",
   "description": "Switch between open VSCode windows from the status bar: pinned projects, most recent ones on hover, and per-project name, color and icon",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "alijunior",
   "license": "MIT",
   "repository": {
@@ -44,6 +44,10 @@
       {
         "command": "projectSwitcher.configureProject",
         "title": "Switch Projects: Configure Current Project"
+      },
+      {
+        "command": "projectSwitcher.openSettings",
+        "title": "Switch Projects: Open Config File"
       }
     ],
     "keybindings": [
@@ -73,6 +77,21 @@
           ],
           "default": "picker",
           "description": "What happens when the status bar item is clicked. The hover always offers the other one: with 'picker', the hover ends with the last active project; with 'last', it ends with the picker."
+        },
+        "switchProjects.coldClickAction": {
+          "type": "string",
+          "enum": [
+            "same",
+            "picker",
+            "none"
+          ],
+          "enumDescriptions": [
+            "A click on an unfocused window does the same as any other click.",
+            "A click on an unfocused window opens the window picker instead.",
+            "A click on an unfocused window does nothing — the window gains focus and the hover opens on its own, since the mouse is already over the item."
+          ],
+          "default": "same",
+          "description": "What a click on the status bar item does when it lands on a window that was not focused. Only used when switchProjects.clickAction is 'last', since 'picker' already opens the list either way."
         },
         "switchProjects.projectSettings": {
           "type": "object",
@@ -108,7 +127,7 @@
           "type": "number",
           "default": 3,
           "minimum": 0,
-          "description": "How many recently used projects are listed when hovering the status bar item. Pinned projects don't take these slots. Set to 0 to turn the hover off — the item then shows only the current project name and clicking it opens the picker."
+          "description": "How many recently used projects are listed when hovering the status bar item. Pinned projects don't take these slots, and neither does the current project — it is listed as an extra line, at its alphabetical position. Set to 0 to turn the hover off — the item then shows only the current project name and clicking it opens the picker."
         },
         "switchProjects.statusBarColor": {
           "type": "string",
@@ -140,7 +159,7 @@
             "⬛",
             "⬜"
           ],
-          "description": "List of icons used to color projects in the picker (assigned by alphabetical position)."
+          "description": "List of icons used to mark projects in the picker. Each project's icon is picked by hashing its absolute path, so it stays the same when other windows open or close. Two projects can land on the same icon."
         },
         "switchProjects.currentIcon": {
           "type": "string",

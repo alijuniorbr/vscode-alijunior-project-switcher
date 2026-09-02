@@ -29,19 +29,26 @@ type ProjectSettings = Record<string, ProjectOverride>
 
 type ClickAction = 'picker' | 'last'
 
+// What a click does when it lands on a window that was not focused: repeat the
+// click action, open the picker, or nothing at all — leaving the mouse parked
+// over the item, which is what makes the hover open on its own.
+type ColdClickAction = 'same' | 'picker' | 'none'
+
 type ConfigField = 'name' | 'color' | 'icon' | 'order'
 
 // A registry entry already resolved against its override, ready to render.
 // `label` is what shows up; `sort` is what orders — without the folder suffix,
 // otherwise the display name would lose its effect on ordering.
 interface ProjectView {
-  path:   string
-  label:  string
-  sort:   string
-  icon:   string
-  order?: number
-  pinned: boolean
-  ts:     number
+  path:    string
+  label:   string
+  sort:    string
+  icon:    string
+  color?:  string
+  order?:  number
+  pinned:  boolean
+  current: boolean
+  ts:      number
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -55,12 +62,25 @@ function getConfig() {
     recentCount:     cfg.get<number>('recentCount', DEFAULT_RECENT_COUNT),
     statusBarColor:  cfg.get<string>('statusBarColor', DEFAULT_STATUS_COLOR),
     clickAction:     resolveClickAction(cfg.get<string>('clickAction', DEFAULT_CLICK_ACTION)),
+    coldClickAction: resolveColdClickAction(cfg.get<string>('coldClickAction', DEFAULT_COLD_CLICK_ACTION)),
     projectSettings: cfg.get<ProjectSettings>('projectSettings', {}),
   }
 }
 
 function resolveClickAction(value: string): ClickAction {
   return value === 'last' ? 'last' : 'picker'
+}
+
+function resolveColdClickAction(value: string): ColdClickAction {
+  if (value === 'picker') {
+    return 'picker'
+  }
+
+  if (value === 'none') {
+    return 'none'
+  }
+
+  return 'same'
 }
 
 function saveProjectSettings(settings: ProjectSettings): Thenable<void> {
@@ -73,6 +93,12 @@ function saveClickAction(action: ClickAction): Thenable<void> {
   return vscode.workspace
     .getConfiguration('switchProjects')
     .update('clickAction', action, vscode.ConfigurationTarget.Global)
+}
+
+function saveColdClickAction(action: ColdClickAction): Thenable<void> {
+  return vscode.workspace
+    .getConfiguration('switchProjects')
+    .update('coldClickAction', action, vscode.ConfigurationTarget.Global)
 }
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
@@ -115,6 +141,8 @@ const DEFAULT_STATUS_COLOR = '#FFD700'
 
 const DEFAULT_CLICK_ACTION = 'picker'
 
+const DEFAULT_COLD_CLICK_ACTION = 'same'
+
 const DEFAULT_ICON = 'folder-opened'
 
 const DEFAULT_PALETTE = [
@@ -126,26 +154,34 @@ const DEFAULT_PALETTE = [
 
 // With a display name set, the folder name becomes a suffix so the project
 // stays recognizable by its real directory.
-function describe(entry: WorkspaceEntry, settings: ProjectSettings): ProjectView {
+function describe(entry: WorkspaceEntry, settings: ProjectSettings, currentPath: string): ProjectView {
   const override = settings[entry.path]
   const alias    = override?.name?.trim()
   const icon     = override?.icon?.trim()
+  const color    = override?.color?.trim()
 
   return {
-    path:   entry.path,
-    label:  alias ? `${alias} (${entry.name})` : entry.name,
-    sort:   alias ? alias : entry.name,
-    icon:   icon ? icon : DEFAULT_ICON,
-    order:  override?.order,
-    pinned: override?.pinned === true,
-    ts:     entry.ts,
+    path:    entry.path,
+    label:   alias ? `${alias} (${entry.name})` : entry.name,
+    sort:    alias ? alias : entry.name,
+    icon:    icon ? icon : DEFAULT_ICON,
+    color:   color && color.length > 0 ? color : undefined,
+    order:   override?.order,
+    pinned:  override?.pinned === true,
+    current: entry.path === currentPath,
+    ts:      entry.ts,
   }
 }
 
+// The current project is part of the list: it keeps its alphabetical position
+// like everyone else. Whoever must not see it filters it out with `otherViews`.
 function describeAll(currentPath: string, settings: ProjectSettings): ProjectView[] {
   return Object.values(readRegistry())
-    .filter(entry => entry.path !== currentPath)
-    .map(entry => describe(entry, settings))
+    .map(entry => describe(entry, settings, currentPath))
+}
+
+function otherViews(views: ProjectView[]): ProjectView[] {
+  return views.filter(view => !view.current)
 }
 
 // ─── Ordering ─────────────────────────────────────────────────────────────────
@@ -177,14 +213,22 @@ function comparePinned(a: ProjectView, b: ProjectView): number {
 // `ts` is rewritten every time a window gains focus, so descending order is
 // real usage order. Recency only picks WHICH projects make the list; what
 // decides each one's position is `compareByName`.
+//
+// The current project is left out of that selection — it is always the most
+// recent one and would eat a slot — and comes back in as an extra line, so the
+// section holds `limit` other projects plus this one.
 function recentViews(views: ProjectView[], limit: number): ProjectView[] {
-  return views
-    .filter(view => !view.pinned)
+  const others = views
+    .filter(view => !view.pinned && !view.current)
     .sort((a, b) => b.ts - a.ts)
     .slice(0, limit)
-    .sort(compareByName)
+
+  const current = views.find(view => view.current && !view.pinned)
+
+  return (current ? [...others, current] : others).sort(compareByName)
 }
 
+// A pinned current project shows up here instead, by its declared order.
 function pinnedViews(views: ProjectView[]): ProjectView[] {
   return views
     .filter(view => view.pinned)
@@ -196,6 +240,26 @@ function pinnedViews(views: ProjectView[]): ProjectView[] {
 function lastView(views: ProjectView[]): ProjectView | undefined {
   const [last] = [...views].sort((a, b) => b.ts - a.ts)
   return last
+}
+
+// ─── Palette ──────────────────────────────────────────────────────────────────
+
+// Hashing the absolute path is what keeps a project's mark still: it doesn't
+// move when other windows open or close, and it survives a rename. Two projects
+// can land on the same mark — the palette is a set of marks, not of identities.
+function paletteMark(wsPath: string, palette: string[]): string {
+  if (palette.length === 0) {
+    return ''
+  }
+
+  let hash = 2166136261
+
+  for (let i = 0; i < wsPath.length; i += 1) {
+    hash ^= wsPath.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+
+  return palette[Math.abs(hash) % palette.length]
 }
 
 // ─── Focus window (cross-platform) ───────────────────────────────────────────
@@ -220,6 +284,24 @@ function focusWindow(workspacePath: string): void {
   spawn(cmd, args, { detached: true, stdio: 'ignore' }).unref()
 }
 
+// ─── Cold click ───────────────────────────────────────────────────────────────
+
+// The window is already focused by the time the command runs — the click itself
+// brought it to the front — so `window.state.focused` is useless here. What is
+// left is timing: a click that lands right after focus arrived is a click that
+// came from another window.
+const COLD_CLICK_WINDOW_MS = 250
+
+let lastFocusAt = 0
+
+function stampFocus(): void {
+  lastFocusAt = Date.now()
+}
+
+function isColdClick(): boolean {
+  return Date.now() - lastFocusAt < COLD_CLICK_WINDOW_MS
+}
+
 // ─── Status bar ──────────────────────────────────────────────────────────────
 
 // High enough for the item to sit left of the git branch indicator, the most
@@ -233,6 +315,7 @@ const TRUSTED_COMMANDS = {
     'projectSwitcher.pin',
     'projectSwitcher.unpin',
     'projectSwitcher.configureProject',
+    'projectSwitcher.openSettings',
     'projectSwitcher.quickConfig',
   ],
 }
@@ -240,6 +323,18 @@ const TRUSTED_COMMANDS = {
 const GEAR_LINK = '[$(gear)](command:projectSwitcher.quickConfig)  '
 
 const PICKER_LINK = '[$(list-flat)  Open picker](command:projectSwitcher.switch)'
+
+const SETTINGS_LINK = '[$(gear)  Current settings](command:projectSwitcher.configureProject)'
+
+const CONFIG_FILE_LINK = '[$(json)  Open config file](command:projectSwitcher.openSettings)'
+
+// Marks the current project's line, in place of its folder icon.
+const CURRENT_MARK = 'circle-filled'
+
+// The tooltip renderer sanitizes the HTML it is given, and whether the `style`
+// attribute survives is not guaranteed across versions. When it is dropped the
+// label still renders, only uncolored. Set to false to skip the span entirely.
+const COLOR_CURRENT = true
 
 // A hex value is used literally; anything else is treated as a theme color id,
 // which lets the item follow the palette instead of pinning one tone.
@@ -257,9 +352,26 @@ function resolveColor(value: string): string | vscode.ThemeColor | undefined {
   return new vscode.ThemeColor(trimmed)
 }
 
+// Only a hex value can be inlined as CSS: a theme color id means nothing to the
+// tooltip, which has no access to the theme's palette.
+function paint(text: string, color: string | undefined): string {
+  if (!COLOR_CURRENT || color === undefined || !color.startsWith('#')) {
+    return text
+  }
+
+  return `<span style="color:${color};">${text}</span>`
+}
+
 function projectLink(view: ProjectView): string {
   const args = encodeURIComponent(JSON.stringify([view.path]))
   return `[$(${view.icon})  ${view.label}](command:projectSwitcher.goto?${args})`
+}
+
+// The current project is not a link: clicking it would ask for focus on the
+// window it is already in. Dropping the link also drops the link color, which
+// is what tells the line apart from the ones around it.
+function currentEntry(view: ProjectView): string {
+  return `$(${CURRENT_MARK})  **${paint(view.label, view.color)}**`
 }
 
 // The action icon opens each line so the click targets stack in the same
@@ -268,8 +380,9 @@ function appendItem(md: vscode.MarkdownString, view: ProjectView): void {
   const args   = encodeURIComponent(JSON.stringify([view.path]))
   const toggle = view.pinned ? 'projectSwitcher.unpin' : 'projectSwitcher.pin'
   const badge  = view.pinned ? 'pinned' : 'pin'
+  const entry  = view.current ? currentEntry(view) : projectLink(view)
 
-  md.appendMarkdown(`[$(${badge})](command:${toggle}?${args})  ${projectLink(view)}\n\n`)
+  md.appendMarkdown(`[$(${badge})](command:${toggle}?${args})  ${entry}\n\n`)
 }
 
 function appendSection(md: vscode.MarkdownString, title: string, views: ProjectView[]): void {
@@ -294,7 +407,7 @@ function appendFooter(
   views:       ProjectView[],
   clickAction: ClickAction,
 ): void {
-  const last = clickAction === 'picker' ? lastView(views) : undefined
+  const last = clickAction === 'picker' ? lastView(otherViews(views)) : undefined
 
   if (!last) {
     md.appendMarkdown(`${GEAR_LINK}${PICKER_LINK}`)
@@ -305,18 +418,22 @@ function appendFooter(
   md.appendMarkdown(`${GEAR_LINK}${projectLink(last)}`)
 }
 
-// The picker shows up once: at the top when the click already opens it, in the
-// footer when the click goes to the last project.
+// The header is about this window's configuration, not about its name — the
+// name is right below the tooltip, on the status bar item itself, and again in
+// the list at its alphabetical position. The picker shows up once: here when
+// the click already opens it, in the footer when the click goes to the last
+// project.
 function buildTooltip(
-  currentLabel: string,
-  views:        ProjectView[],
-  recentCount:  number,
-  clickAction:  ClickAction,
+  views:       ProjectView[],
+  recentCount: number,
+  clickAction: ClickAction,
 ): vscode.MarkdownString {
   const md = new vscode.MarkdownString('', true)
-  md.isTrusted = TRUSTED_COMMANDS
+  md.isTrusted   = TRUSTED_COMMANDS
+  md.supportHtml = true
 
-  md.appendMarkdown(`**${currentLabel}**  [$(gear)](command:projectSwitcher.configureProject)\n\n`)
+  md.appendMarkdown(`${SETTINGS_LINK}\n\n`)
+  md.appendMarkdown(`${CONFIG_FILE_LINK}\n\n`)
 
   if (clickAction === 'picker') {
     md.appendMarkdown(`${PICKER_LINK}\n\n`)
@@ -324,13 +441,12 @@ function buildTooltip(
 
   md.appendMarkdown('---\n\n')
 
-  if (views.length === 0) {
+  if (otherViews(views).length === 0) {
     md.appendMarkdown('_No other window open_\n\n')
-    md.appendMarkdown('---\n\n')
-  } else {
-    appendSection(md, `Last ${recentCount} opened`, recentViews(views, recentCount))
-    appendSection(md, 'Pinned', pinnedViews(views))
   }
+
+  appendSection(md, `Last ${recentCount} opened`, recentViews(views, recentCount))
+  appendSection(md, 'Pinned', pinnedViews(views))
 
   appendFooter(md, views, clickAction)
 
@@ -363,8 +479,8 @@ function refreshStatusBar(item: vscode.StatusBarItem): void {
 
   const views = describeAll(currentPath, projectSettings)
 
-  item.tooltip = buildTooltip(currentLabel, views, recentCount, clickAction)
-  item.command = clickAction === 'last' ? 'projectSwitcher.gotoLast' : 'projectSwitcher.switch'
+  item.tooltip = buildTooltip(views, recentCount, clickAction)
+  item.command = 'projectSwitcher.statusClick'
   item.show()
 }
 
@@ -515,11 +631,21 @@ async function configureProject(): Promise<void> {
   await saveProjectSettings(next)
 }
 
-// Direct choice of the click action, with the current one marked.
-async function quickConfig(): Promise<void> {
-  const { clickAction } = getConfig()
+// Opens the file where every project override lives, cursor inside the block
+// when the running version honours `revealSetting` — and at the top of the
+// file when it doesn't.
+async function openSettingsFile(): Promise<void> {
+  await vscode.commands.executeCommand('workbench.action.openSettingsJson', {
+    revealSetting: { key: 'switchProjects.projectSettings', edit: true },
+  })
+}
 
-  const items = [
+// Two steps: the click action first, saved on its own, then what a click on an
+// unfocused window does. Cancelling the second step keeps the first.
+async function quickConfig(): Promise<void> {
+  const { clickAction, coldClickAction } = getConfig()
+
+  const clickItems = [
     {
       label:       '$(arrow-right)  Last',
       description: clickAction === 'last' ? '✓ current' : 'go straight to the last project',
@@ -532,15 +658,45 @@ async function quickConfig(): Promise<void> {
     },
   ]
 
-  const pick = await vscode.window.showQuickPick(items, {
+  const clickPick = await vscode.window.showQuickPick(clickItems, {
     placeHolder: 'Status bar click action',
   })
 
-  if (!pick || pick.action === clickAction) {
+  if (!clickPick) {
     return
   }
 
-  await saveClickAction(pick.action)
+  if (clickPick.action !== clickAction) {
+    await saveClickAction(clickPick.action)
+  }
+
+  const coldItems = [
+    {
+      label:       '$(arrow-right)  Same',
+      description: coldClickAction === 'same' ? '✓ current' : 'no difference, the click always acts',
+      action:      'same' as ColdClickAction,
+    },
+    {
+      label:       '$(list-flat)  Picker',
+      description: coldClickAction === 'picker' ? '✓ current' : 'open the project list instead',
+      action:      'picker' as ColdClickAction,
+    },
+    {
+      label:       '$(circle-slash)  None',
+      description: coldClickAction === 'none' ? '✓ current' : 'do nothing and let the hover open',
+      action:      'none' as ColdClickAction,
+    },
+  ]
+
+  const coldPick = await vscode.window.showQuickPick(coldItems, {
+    placeHolder: 'Click on an unfocused window — only used when the click action is Last',
+  })
+
+  if (!coldPick || coldPick.action === coldClickAction) {
+    return
+  }
+
+  await saveColdClickAction(coldPick.action)
 }
 
 // ─── Activation ───────────────────────────────────────────────────────────────
@@ -568,12 +724,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Gaining focus stamps this window's own `ts` and reorders recency — the
   // other windows stay frozen at the moment focus left them. With no recent
-  // list nobody consumes that order, so the stamp is skipped.
+  // list nobody consumes that order, so the stamp is skipped. The cold click
+  // timestamp is kept either way: it costs nothing and doesn't touch the disk.
   context.subscriptions.push(
     vscode.window.onDidChangeWindowState(state => {
       if (!state.focused) {
         return
       }
+
+      stampFocus()
 
       const { recentCount } = getConfig()
 
@@ -616,7 +775,35 @@ export function activate(context: vscode.ExtensionContext): void {
   )
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('projectSwitcher.openSettings', openSettingsFile)
+  )
+
+  context.subscriptions.push(
     vscode.commands.registerCommand('projectSwitcher.quickConfig', quickConfig)
+  )
+
+  // Only the status bar item goes through here, so the cold click rule never
+  // reaches the keybindings: pressing the shortcut always does what it says.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('projectSwitcher.statusClick', async (): Promise<void> => {
+      const { clickAction, coldClickAction } = getConfig()
+
+      if (clickAction === 'last' && coldClickAction !== 'same' && isColdClick()) {
+        if (coldClickAction === 'none') {
+          return
+        }
+
+        await vscode.commands.executeCommand('projectSwitcher.switch')
+        return
+      }
+
+      if (clickAction === 'last') {
+        await vscode.commands.executeCommand('projectSwitcher.gotoLast')
+        return
+      }
+
+      await vscode.commands.executeCommand('projectSwitcher.switch')
+    })
   )
 
   // With no other window registered there is no destination, so the click falls
@@ -624,7 +811,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('projectSwitcher.gotoLast', async (): Promise<void> => {
       const currentPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
-      const last        = lastView(describeAll(currentPath, getConfig().projectSettings))
+      const last        = lastView(otherViews(describeAll(currentPath, getConfig().projectSettings)))
 
       if (!last) {
         await vscode.commands.executeCommand('projectSwitcher.switch')
@@ -641,7 +828,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const currentPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
 
       const entries = Object.values(readRegistry())
-        .map(entry => describe(entry, projectSettings))
+        .map(entry => describe(entry, projectSettings, currentPath))
         .sort(compareByName)
 
       if (!entries.length) {
@@ -649,10 +836,10 @@ export function activate(context: vscode.ExtensionContext): void {
         return
       }
 
-      const allItems = entries.map((entry, i) => {
-        const isCurrent = entry.path === currentPath
+      const allItems = entries.map(entry => {
+        const isCurrent = entry.current
         return {
-          label:       `${isCurrent ? currentIcon : palette[i % palette.length]}  ${entry.label}`,
+          label:       `${isCurrent ? currentIcon : paletteMark(entry.path, palette)}  ${entry.label}`,
           description: isCurrent ? '← current' : undefined,
           detail:      entry.path,
           isCurrent,
